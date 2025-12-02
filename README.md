@@ -93,10 +93,15 @@ Folium Mapping
 
 Streamlit Framework
 
+# Live Demo : 
+
+click the link for live demo : https://disasteranalyser.streamlit.app
+
 
 # 🤝 Contributions
 
 Feel free to submit issues or pull requests to improve features or detection logic.
+
 
 
 
