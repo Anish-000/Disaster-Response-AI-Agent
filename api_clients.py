@@ -301,11 +301,23 @@ def find_coastline_distance(lat: float, lon: float, radius_km: int = 100):
     );
     out center 10;
     """
-    res, err = _run_overpass_query(q)
-    if err or res is None:
+    try:
+        res, err = _run_overpass_query(q)
+        if err or res is None:
+            return None
+        points = []
+        for w in res.ways:
+            c = w.get_center()
+            if c is not None and c.lat is not None and c.lon is not None:
+                points.append((c.lat, c.lon))
+        for r in res.relations:
+            c = r.get_center()
+            if c is not None and c.lat is not None and c.lon is not None:
+                points.append((c.lat, c.lon))
+        if not points:
+            return None
+        return min(haversine_km(lat, lon, p[0], p[1]) for p in points)
+    except Exception:
+        # Any unexpected parsing issue should never crash the app -
+        # tsunami logic just falls back to "coastline distance unknown".
         return None
-    points = [(w.get_center().lat, w.get_center().lon) for w in res.ways]
-    points += [(r.get_center().lat, r.get_center().lon) for r in res.relations]
-    if not points:
-        return None
-    return min(haversine_km(lat, lon, p[0], p[1]) for p in points)
