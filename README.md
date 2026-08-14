@@ -184,7 +184,7 @@ The app will open automatically at `http://localhost:8501`.
 
 Deployed live on **Streamlit Community Cloud**:
 
-**[→ Launch Disaster Advisor](https://disaster-response-ai-agent-ftm9juqnqqx8agtbamdswq.streamlit.app/)**
+**[→ Launch Disaster Advisor](https://disaster-response-ai-agent.streamlit.app/)**
 
 To deploy your own copy:
 1. Push this repo to your GitHub account
