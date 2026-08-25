@@ -6,6 +6,7 @@ a plain dict — either the parsed data, or {"error": "..."} on failure — and 
 touches Streamlit or raises uncaught exceptions.
 """
 
+import socket
 from datetime import datetime, timedelta
 
 import requests
@@ -25,11 +26,19 @@ from config import (
 )
 from geo_utils import haversine_km, make_directions_url
 
+# overpy's internal urlopen() call sets no socket timeout at all, so a
+# slow/unresponsive Overpass mirror can hang for minutes before Windows'
+# low-level network stack finally gives up (the WinError 10060 seen in
+# practice). Setting a global default timeout makes every socket - including
+# overpy's - fail fast and predictably instead.
+socket.setdefaulttimeout(15)
+
 geolocator = Nominatim(user_agent="disaster_advisor_app")
 
 # Public Overpass endpoints, tried in order. The main overpass-api.de instance
 # rate-limits/blocks anonymous requests fairly often (403), so we fall back to
-# mirrors instead of treating that as "zero results found".
+# mirrors instead of treating that as "zero results found". Each mirror also
+# gets one quick internal retry before we move on to the next.
 _OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -39,13 +48,14 @@ _OVERPASS_ENDPOINTS = [
 
 def _run_overpass_query(query: str):
     """
-    Runs an Overpass QL query, trying each mirror in turn.
-    Returns (result, None) on success, or (None, error_message) if every mirror fails.
+    Runs an Overpass QL query, trying each mirror in turn (each with one quick
+    internal retry). Returns (result, None) on success, or (None, error_message)
+    if every mirror fails.
     """
     last_error = None
     for endpoint in _OVERPASS_ENDPOINTS:
         try:
-            api = overpy.Overpass(url=endpoint)
+            api = overpy.Overpass(url=endpoint, max_retry_count=1, retry_timeout=2)
             return api.query(query), None
         except Exception as e:
             last_error = str(e)

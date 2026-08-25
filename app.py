@@ -44,6 +44,8 @@ st.markdown(
     .sev-moderate { background: #d97706; }
     .sev-high { background: #dc2626; }
     .headline-risk { font-size: 28px; font-weight: 800; }
+    .hazard-tile { background: #111827; border-radius: 12px; padding: 14px 8px;
+                   text-align: center; border: 1px solid #2d3748; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -225,22 +227,43 @@ hospitals, shelters = results["hospitals"], results["shelters"]
 
 # ---------------- Overview ----------------
 with tabs[0]:
-    st.markdown(f"<div class='card'><span class='small-muted'>Overall risk</span><br>"
-                f"{severity_badge(results['overall_risk'])}</div>", unsafe_allow_html=True)
+    risk_bg = {"low": "#14532d", "moderate": "#78350f", "high": "#7f1d1d"}.get(results["overall_risk"], "#374151")
+    st.markdown(
+        f"<div class='card' style='background:{risk_bg}; display:flex; align-items:center; gap:18px;'>"
+        f"<div><div class='small-muted'>OVERALL RISK</div>"
+        f"<div class='headline-risk'>{results['overall_risk'].upper()}</div></div>"
+        f"<div style='flex:1; text-align:right;' class='small-muted'>"
+        f"{escape(location_input)}<br>{lat:.4f}, {lon:.4f}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    w = results["weather"]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Temperature", f"{w.get('temperature_c', '–')} °C" if "error" not in w else "N/A")
+    m2.metric("Wind", f"{w.get('wind_kph', '–')} km/h" if "error" not in w else "N/A")
+    m3.metric("Hazards flagged", sum(1 for v in sev.values() if v != "low"))
+    m4.metric("Search radius", f"{radius_km} km")
+
+    hazard_icons = {
+        "earthquake": "🌍", "snowfall": "❄️", "hurricane": "🌪️",
+        "wildfire": "🔥", "flood": "🌊", "tsunami": "🌊",
+    }
+    cards_html = "".join(
+        f"<div class='hazard-tile'>"
+        f"<div style='font-size:22px'>{hazard_icons.get(k, '⚠️')}</div>"
+        f"<div class='small-muted' style='margin:6px 0'>{k.title()}</div>"
+        f"{severity_badge(v)}</div>"
+        for k, v in sev.items()
+    )
+    st.markdown(
+        f"<div class='card'><div class='small-muted' style='margin-bottom:12px'>HAZARD BREAKDOWN</div>"
+        f"<div style='display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:12px;'>"
+        f"{cards_html}</div></div>",
+        unsafe_allow_html=True,
+    )
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.markdown(f"**Location:** `{escape(location_input)}` — `{lat:.5f}, {lon:.5f}`")
-        w = results["weather"]
-        if "error" not in w:
-            st.markdown(f"**Temperature:** {w.get('temperature_c')} °C — **Wind:** {w.get('wind_kph')} km/h")
-
-        badges = "".join(
-            f"<div style='margin-right:16px'><div class='small-muted'>{k.title()}</div>{severity_badge(v)}</div>"
-            for k, v in sev.items()
-        )
-        st.markdown(f"<div style='display:flex'>{badges}</div>", unsafe_allow_html=True)
-
         fmap = folium.Map(location=(lat, lon), zoom_start=11)
         folium.CircleMarker((lat, lon), radius=8, color="#0ea5e9", fill=True, popup="Query location").add_to(fmap)
         for h in hospitals:
@@ -249,7 +272,7 @@ with tabs[0]:
         for s in shelters:
             folium.Marker((s["lat"], s["lon"]), popup=escape(s["name"]),
                           icon=folium.Icon(color="green", icon="info-sign")).add_to(fmap)
-        components.html(fmap._repr_html_(), height=400)
+        components.html(fmap._repr_html_(), height=420)
     with col2:
         st.markdown("<div class='card'><h4>Nearest Hospitals</h4>", unsafe_allow_html=True)
         if results.get("hospitals_error"):
@@ -298,29 +321,59 @@ with tabs[1]:
 # ---------------- Flood ----------------
 with tabs[2]:
     st.header("Flood Risk")
+    flood = results["flood"]
     st.markdown(f"**Severity:** {severity_badge(sev['flood'])}", unsafe_allow_html=True)
-    st.json(results["flood"])
+    if "error" in flood:
+        st.warning(f"Flood data unavailable: {flood['error']}")
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Forecast (next 24h)", f"{flood.get('forecast_24h_mm', 0):.1f} mm")
+        c2.metric("Recent (last 24h)", f"{flood.get('recent_24h_mm_approx', 0):.1f} mm")
+        weekly = flood.get("precip_last7_mm")
+        c3.metric("Last 7 days", f"{weekly:.1f} mm" if weekly is not None else "N/A")
+        with st.expander("Show raw data"):
+            st.json(flood)
 
 # ---------------- Wildfire ----------------
 with tabs[3]:
     st.header("Wildfire Risk")
+    wf = results["wildfire"]
+    w = results["weather"]
     st.markdown(f"**Severity:** {severity_badge(sev['wildfire'])}", unsafe_allow_html=True)
-    st.json(results["wildfire"])
+    if "error" in wf:
+        st.warning(f"Wildfire data unavailable: {wf['error']}")
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Rain — last 7 days", f"{wf.get('precip_last7_mm', 0):.1f} mm")
+        max_temp = wf.get("max_temp_last7_c")
+        c2.metric("Max temp — last 7 days", f"{max_temp:.1f} °C" if max_temp is not None else "N/A")
+        c3.metric("Current wind", f"{w.get('wind_kph', '–')} km/h" if "error" not in w else "N/A")
+        with st.expander("Show raw data"):
+            st.json(wf)
 
 # ---------------- Hurricane ----------------
 with tabs[4]:
     st.header("Hurricane / Strong Wind Risk")
+    hurr = results["hurricane"]
     st.markdown(f"**Severity:** {severity_badge(sev['hurricane'])}", unsafe_allow_html=True)
-    st.json(results["hurricane"])
+    if "error" in hurr:
+        st.warning(f"Hurricane data unavailable: {hurr['error']}")
+    else:
+        st.metric("Max forecast wind (next 48h)", f"{hurr.get('max_wind_kph', 0):.1f} km/h")
+        with st.expander("Show raw data"):
+            st.json(hurr)
 
 # ---------------- Tsunami ----------------
 with tabs[5]:
     st.header("Tsunami Heuristic")
     tsu = results["tsunami"]
-    st.markdown(f"**Severity:** {severity_badge(sev['tsunami'])}  — Possible: {tsu['possible']}",
-                unsafe_allow_html=True)
-    st.write(f"Nearest coastline: {tsu.get('min_coast_distance_km')} km — "
-             f"Max quake magnitude nearby: {tsu.get('max_quake_magnitude')}")
+    st.markdown(f"**Severity:** {severity_badge(sev['tsunami'])}", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Possible", "Yes" if tsu.get("possible") else "No")
+    coast = tsu.get("min_coast_distance_km")
+    c2.metric("Nearest coastline", f"{coast:.1f} km" if coast is not None else "Unknown")
+    mag = tsu.get("max_quake_magnitude")
+    c3.metric("Max nearby quake magnitude", f"{mag:.1f}" if mag is not None else "N/A")
 
 # ---------------- Hospitals ----------------
 with tabs[6]:
