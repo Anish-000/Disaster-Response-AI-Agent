@@ -31,7 +31,7 @@ from geo_utils import haversine_km, make_directions_url
 # low-level network stack finally gives up (the WinError 10060 seen in
 # practice). Setting a global default timeout makes every socket - including
 # overpy's - fail fast and predictably instead.
-socket.setdefaulttimeout(15)
+socket.setdefaulttimeout(30)
 
 geolocator = Nominatim(user_agent="disaster_advisor_app")
 
@@ -55,7 +55,7 @@ def _run_overpass_query(query: str):
     last_error = None
     for endpoint in _OVERPASS_ENDPOINTS:
         try:
-            api = overpy.Overpass(url=endpoint, max_retry_count=1, retry_timeout=2)
+            api = overpy.Overpass(url=endpoint, max_retry_count=2, retry_timeout=3)
             return api.query(query), None
         except Exception as e:
             last_error = str(e)
