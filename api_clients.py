@@ -1,22 +1,26 @@
 """
 api_clients.py
 All "talk to the outside world" functions live here: USGS, Open-Meteo (forecast +
-historical), Nominatim (geocoding), Overpass (POI search). Each function returns
-a plain dict — either the parsed data, or {"error": "..."} on failure — and never
-touches Streamlit or raises uncaught exceptions.
+historical), Geoapify (geocoding + hospital/shelter search), Overpass (coastline
+proximity only). Each function returns a plain dict — either the parsed data, or
+{"error": "..."} on failure — and never touches Streamlit or raises uncaught
+exceptions.
 """
 
+import os
 import socket
 from datetime import datetime, timedelta
 
 import requests
 import overpy
-from geopy.geocoders import Nominatim
+from dotenv import load_dotenv
 
 from config import (
     USGS_EARTHQUAKE_URL,
     OPEN_METEO_FORECAST_URL,
     OPEN_METEO_HISTORICAL_URL,
+    GEOAPIFY_GEOCODE_URL,
+    GEOAPIFY_PLACES_URL,
     DEFAULT_TIMEOUT,
     LONG_TIMEOUT,
     DEFAULT_HOSPITAL_RADIUS_KM,
@@ -26,19 +30,18 @@ from config import (
 )
 from geo_utils import haversine_km, make_directions_url
 
+# Loaded independently here (not just in app.py) so this module works
+# correctly even if imported/tested on its own.
+load_dotenv()
+GEOAPIFY_API_KEY = os.getenv("GEOAPIFY_API_KEY")
+
 # overpy's internal urlopen() call sets no socket timeout at all, so a
 # slow/unresponsive Overpass mirror can hang for minutes before Windows'
-# low-level network stack finally gives up (the WinError 10060 seen in
-# practice). Setting a global default timeout makes every socket - including
-# overpy's - fail fast and predictably instead.
+# low-level network stack finally gives up. Setting a global default
+# timeout makes every socket - including overpy's - fail fast and
+# predictably instead. (Still used here for the coastline lookup only.)
 socket.setdefaulttimeout(30)
 
-geolocator = Nominatim(user_agent="disaster_advisor_app")
-
-# Public Overpass endpoints, tried in order. The main overpass-api.de instance
-# rate-limits/blocks anonymous requests fairly often (403), so we fall back to
-# mirrors instead of treating that as "zero results found". Each mirror also
-# gets one quick internal retry before we move on to the next.
 _OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -48,9 +51,9 @@ _OVERPASS_ENDPOINTS = [
 
 def _run_overpass_query(query: str):
     """
-    Runs an Overpass QL query, trying each mirror in turn (each with one quick
-    internal retry). Returns (result, None) on success, or (None, error_message)
-    if every mirror fails.
+    Runs an Overpass QL query, trying each mirror in turn (each with a couple
+    of quick internal retries). Returns (result, None) on success, or
+    (None, error_message) if every mirror fails.
     """
     last_error = None
     for endpoint in _OVERPASS_ENDPOINTS:
@@ -78,14 +81,104 @@ def _safe_get(url: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
 
 
 def geocode_place(place: str) -> dict:
-    """Convert a place name into {'lat': ..., 'lon': ...} using Nominatim."""
+    """Convert a place name into {'lat': ..., 'lon': ...} using Geoapify Geocoding."""
+    if not GEOAPIFY_API_KEY:
+        return {"error": "GEOAPIFY_API_KEY is not set (add it to .env or Streamlit secrets)"}
+    url = f"{GEOAPIFY_GEOCODE_URL}?text={requests.utils.quote(place)}&limit=1&apiKey={GEOAPIFY_API_KEY}"
+    d = _safe_get(url)
+    if "error" in d:
+        return d
+    features = d.get("features", [])
+    if not features:
+        return {"error": "could not geocode"}
+    lon, lat = features[0]["geometry"]["coordinates"]
+    return {"lat": float(lat), "lon": float(lon)}
+
+
+def _geoapify_places(lat: float, lon: float, categories: str, radius_km: float, max_results: int) -> dict:
+    """
+    Shared helper for hospital/shelter search via Geoapify Places API.
+    Returns {"places": [...]} or {"error": ...}.
+    """
+    if not GEOAPIFY_API_KEY:
+        return {"error": "GEOAPIFY_API_KEY is not set (add it to .env or Streamlit secrets)"}
+    radius_m = int(radius_km * 1000)
+    url = (
+        f"{GEOAPIFY_PLACES_URL}?categories={categories}"
+        f"&filter=circle:{lon},{lat},{radius_m}"
+        f"&limit={max_results}&apiKey={GEOAPIFY_API_KEY}"
+    )
+    d = _safe_get(url, timeout=LONG_TIMEOUT)
+    if "error" in d:
+        return d
+    items = []
+    for f in d.get("features", []):
+        props = f.get("properties", {})
+        p_lat, p_lon = props.get("lat"), props.get("lon")
+        if p_lat is None or p_lon is None:
+            continue
+        items.append({
+            "name": props.get("name") or props.get("address_line1") or "Unknown",
+            "lat": p_lat, "lon": p_lon,
+            "distance_km": round(haversine_km(lat, lon, p_lat, p_lon), 2),
+            "type": (props.get("categories") or ["unknown"])[-1],
+            "directions_url": make_directions_url(lat, lon, p_lat, p_lon),
+        })
+    items.sort(key=lambda x: x["distance_km"])
+    return {"places": items[:max_results]}
+
+
+def find_hospitals(lat: float, lon: float, radius_km: int = DEFAULT_HOSPITAL_RADIUS_KM,
+                    max_results: int = MAX_HOSPITAL_RESULTS) -> dict:
+    """Nearby hospitals/clinics via Geoapify Places."""
+    result = _geoapify_places(lat, lon, "healthcare.hospital,healthcare.clinic_or_praxis",
+                               radius_km, max_results)
+    if "error" in result:
+        return result
+    return {"hospitals": result["places"]}
+
+
+def find_schools(lat: float, lon: float, radius_km: int = DEFAULT_SHELTER_RADIUS_KM,
+                  max_results: int = MAX_SHELTER_RESULTS) -> dict:
+    """Schools/colleges used as proxy shelters, via Geoapify Places."""
+    result = _geoapify_places(lat, lon, "education.school,education.college,education.university",
+                               radius_km, max_results)
+    if "error" in result:
+        return result
+    return {"shelters": result["places"]}
+
+
+def find_coastline_distance(lat: float, lon: float, radius_km: int = 100):
+    """Distance in km to nearest coastline, via Overpass. Returns None if unknown/unavailable."""
+    radius_m = int(radius_km * 1000)
+    q = f"""
+    [out:json][timeout:25];
+    (
+      way(around:{radius_m},{lat},{lon})["natural"="coastline"];
+      relation(around:{radius_m},{lat},{lon})["natural"="coastline"];
+    );
+    out center 10;
+    """
     try:
-        loc = geolocator.geocode(place, timeout=10)
-        if not loc:
-            return {"error": "could not geocode"}
-        return {"lat": float(loc.latitude), "lon": float(loc.longitude)}
-    except Exception as e:
-        return {"error": str(e)}
+        res, err = _run_overpass_query(q)
+        if err or res is None:
+            return None
+        points = []
+        for w in res.ways:
+            c = w.get_center()
+            if c is not None and c.lat is not None and c.lon is not None:
+                points.append((c.lat, c.lon))
+        for r in res.relations:
+            c = r.get_center()
+            if c is not None and c.lat is not None and c.lon is not None:
+                points.append((c.lat, c.lon))
+        if not points:
+            return None
+        return min(haversine_km(lat, lon, p[0], p[1]) for p in points)
+    except Exception:
+        # Any unexpected parsing issue should never crash the app -
+        # tsunami logic just falls back to "coastline distance unknown".
+        return None
 
 
 def check_earthquake(lat: float, lon: float, radius_km: int = 100) -> dict:
@@ -223,111 +316,3 @@ def check_flood_precipitation(lat: float, lon: float) -> dict:
         sum7 = sum([v or 0.0 for v in precip7])
 
     return {"forecast_24h_mm": forecast_24h, "recent_24h_mm_approx": recent_24h, "precip_last7_mm": sum7}
-
-
-def find_hospitals(lat: float, lon: float, radius_km: int = DEFAULT_HOSPITAL_RADIUS_KM,
-                    max_results: int = MAX_HOSPITAL_RESULTS) -> dict:
-    """Nearby hospitals/clinics via Overpass (OpenStreetMap)."""
-    radius_m = int(radius_km * 1000)
-    q = f"""
-    [out:json][timeout:25];
-    (
-      node(around:{radius_m},{lat},{lon})[healthcare];
-      node(around:{radius_m},{lat},{lon})[amenity~"hospital|clinic|doctors|health_post"];
-      way(around:{radius_m},{lat},{lon})[amenity~"hospital|clinic|doctors|health_post"];
-    );
-    out center {max_results};
-    """
-    res, err = _run_overpass_query(q)
-    if err:
-        return {"error": err}
-    items = []
-    for node in res.nodes:
-        nlat, nlon = float(node.lat), float(node.lon)
-        items.append({
-            "name": node.tags.get("name", "Unknown"),
-            "lat": nlat, "lon": nlon,
-            "distance_km": round(haversine_km(lat, lon, nlat, nlon), 2),
-            "type": node.tags.get("amenity") or node.tags.get("healthcare", "healthcare"),
-            "directions_url": make_directions_url(lat, lon, nlat, nlon),
-        })
-    for way in res.ways:
-        c = way.get_center()
-        items.append({
-            "name": way.tags.get("name", "Unknown"),
-            "lat": c.lat, "lon": c.lon,
-            "distance_km": round(haversine_km(lat, lon, c.lat, c.lon), 2),
-            "type": way.tags.get("amenity") or way.tags.get("healthcare", "healthcare"),
-            "directions_url": make_directions_url(lat, lon, c.lat, c.lon),
-        })
-    items.sort(key=lambda x: x["distance_km"])
-    return {"hospitals": items[:max_results]}
-
-
-def find_schools(lat: float, lon: float, radius_km: int = DEFAULT_SHELTER_RADIUS_KM,
-                  max_results: int = MAX_SHELTER_RESULTS) -> dict:
-    """Schools/colleges used as proxy shelters, via Overpass."""
-    radius_m = int(radius_km * 1000)
-    q = f"""
-    [out:json][timeout:25];
-    (
-      node(around:{radius_m},{lat},{lon})["amenity"~"school|college|university"];
-      way(around:{radius_m},{lat},{lon})["amenity"~"school|college|university"];
-    );
-    out center {max_results};
-    """
-    res, err = _run_overpass_query(q)
-    if err:
-        return {"error": err}
-    items = []
-    for node in res.nodes:
-        nlat, nlon = float(node.lat), float(node.lon)
-        items.append({
-            "name": node.tags.get("name", "Unknown"),
-            "lat": nlat, "lon": nlon,
-            "distance_km": round(haversine_km(lat, lon, nlat, nlon), 2),
-            "type": node.tags.get("amenity", "school"),
-        })
-    for way in res.ways:
-        c = way.get_center()
-        items.append({
-            "name": way.tags.get("name", "Unknown"),
-            "lat": c.lat, "lon": c.lon,
-            "distance_km": round(haversine_km(lat, lon, c.lat, c.lon), 2),
-            "type": way.tags.get("amenity", "school"),
-        })
-    items.sort(key=lambda x: x["distance_km"])
-    return {"shelters": items[:max_results]}
-
-
-def find_coastline_distance(lat: float, lon: float, radius_km: int = 100):
-    """Distance in km to nearest coastline, via Overpass. Returns None if unknown/unavailable."""
-    radius_m = int(radius_km * 1000)
-    q = f"""
-    [out:json][timeout:25];
-    (
-      way(around:{radius_m},{lat},{lon})["natural"="coastline"];
-      relation(around:{radius_m},{lat},{lon})["natural"="coastline"];
-    );
-    out center 10;
-    """
-    try:
-        res, err = _run_overpass_query(q)
-        if err or res is None:
-            return None
-        points = []
-        for w in res.ways:
-            c = w.get_center()
-            if c is not None and c.lat is not None and c.lon is not None:
-                points.append((c.lat, c.lon))
-        for r in res.relations:
-            c = r.get_center()
-            if c is not None and c.lat is not None and c.lon is not None:
-                points.append((c.lat, c.lon))
-        if not points:
-            return None
-        return min(haversine_km(lat, lon, p[0], p[1]) for p in points)
-    except Exception:
-        # Any unexpected parsing issue should never crash the app -
-        # tsunami logic just falls back to "coastline distance unknown".
-        return None

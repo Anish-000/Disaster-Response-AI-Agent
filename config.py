@@ -9,6 +9,14 @@ USGS_EARTHQUAKE_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/era5"
 
+# Geoapify handles geocoding + hospital/shelter search (replaces the
+# unreliable public Nominatim/Overpass instances, which rate-limit and
+# time out under normal use). Free tier: 3,000 requests/day.
+# Get a key at https://myprojects.geoapify.com/ and put it in .env as
+# GEOAPIFY_API_KEY=...
+GEOAPIFY_GEOCODE_URL = "https://api.geoapify.com/v1/geocode/search"
+GEOAPIFY_PLACES_URL = "https://api.geoapify.com/v2/places"
+
 # ---------- Timeouts (seconds) ----------
 DEFAULT_TIMEOUT = 8
 LONG_TIMEOUT = 10
