@@ -9,9 +9,9 @@
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](#license)
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-orange?style=for-the-badge)](https://disaster-response-ai-agent-ftm9juqnqqx8agtbamdswq.streamlit.app/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-orange?style=for-the-badge)](https://disaster-response-ai-agent.streamlit.app/)
 
-[**Live Demo**](https://disaster-response-ai-agent-ftm9juqnqqx8agtbamdswq.streamlit.app/) · [Features](#-features) · [How It Works](#-how-it-works) · [Installation](#-installation) · [Architecture](#-architecture)
+[**Live Demo**](https://disaster-response-ai-agent.streamlit.app/) · [Features](#-features) · [How It Works](#-how-it-works) · [Installation](#-installation) · [Architecture](#-architecture)
 
 </div>
 
@@ -43,13 +43,13 @@ Built during a **Google × Kaggle Capstone Project**.
 |---|---|
 | 🌍 **Multi-Hazard Detection** | Earthquake, Flood, Hurricane/Wind, Snowfall, Wildfire, Tsunami — all assessed per location |
 | 🚦 **Rule-Based Severity Engine** | Transparent, explainable Low / Moderate / High scoring — no black-box ML |
-| 🏥 **Nearby Resource Finder** | Live hospital & shelter lookup via OpenStreetMap, sorted by distance |
+| 🏥 **Nearby Resource Finder** | Live hospital & shelter lookup via Geoapify Places, sorted by distance |
 | 🗺️ **Interactive Maps** | Folium-powered maps with marker clustering for earthquakes, hospitals, and shelters |
 | 🧭 **One-Click Directions** | Auto-generated Google Maps routes to every hospital/shelter |
 | 📋 **Smart Action Plans** | Context-aware, hazard-specific emergency instructions |
 | 🤖 **AI Summarization** | Optional Gemini-powered plain-language summary of the action plan |
 | 📥 **Exportable Reports** | Download the full assessment as JSON |
-| ⚡ **Cached & Resilient** | Response caching + automatic fallback across multiple OpenStreetMap mirrors |
+| ⚡ **Cached & Resilient** | Response caching + automatic fallback across multiple OpenStreetMap mirrors (coastline lookup) |
 
 ---
 
@@ -60,13 +60,13 @@ Built during a **Google × Kaggle Capstone Project**.
         │
         ▼
  ┌─────────────────┐
- │   Geocoding      │  Nominatim (OpenStreetMap)
+ │   Geocoding      │  Geoapify Geocoding API
  └────────┬─────────┘
           ▼
  ┌───────────────────────────────────────────┐
  │           Live Data Aggregation            │
  │  USGS · Open-Meteo (forecast + historical)  │
- │         · Overpass (OpenStreetMap)          │
+ │   · Geoapify Places · Overpass (coastline)   │
  └────────────────────┬────────────────────────┘
                        ▼
  ┌─────────────────────────────────────┐
@@ -86,10 +86,10 @@ Built during a **Google × Kaggle Capstone Project**.
  └───────────────────────────────────────┘
 ```
 
-1. **Geocode** — the location name is converted to coordinates via Nominatim.
-2. **Aggregate** — six live APIs are queried in parallel-ish fashion, each independently cached.
+1. **Geocode** — the location name is converted to coordinates via the Geoapify Geocoding API.
+2. **Aggregate** — live APIs are queried for each hazard signal, each independently cached.
 3. **Score** — a transparent, heuristic risk engine assigns Low / Moderate / High per hazard, using thresholds grounded in real-world hazard science (e.g., magnitude ≥ 6.5 near a coastline → tsunami risk).
-4. **Locate help** — nearby hospitals and schools/colleges (as shelter proxies) are pulled from OpenStreetMap, distance-sorted using the **Haversine formula**.
+4. **Locate help** — nearby hospitals and schools/colleges (as shelter proxies) are pulled from Geoapify Places, distance-sorted using the **Haversine formula**.
 5. **Advise** — a prioritized action plan is generated per triggered hazard, optionally condensed by Gemini into a quick-read summary.
 6. **Visualize** — everything renders on an interactive multi-tab dashboard with live Folium maps.
 
@@ -102,12 +102,13 @@ Built during a **Google × Kaggle Capstone Project**.
 | **USGS Earthquake API** | Real-time & historical seismic event data |
 | **Open-Meteo Forecast API** | Current weather, wind, precipitation, snowfall forecasts |
 | **Open-Meteo Historical (ERA5) API** | 7-day historical climate data for wildfire risk |
-| **Nominatim (OpenStreetMap)** | Geocoding — place name → coordinates |
-| **Overpass API (OpenStreetMap)** | Hospitals, shelters, and coastline proximity search |
+| **Geoapify Geocoding API** | Geocoding — place name → coordinates |
+| **Geoapify Places API** | Nearby hospital, clinic, and school/college (shelter proxy) search |
+| **Overpass API (OpenStreetMap)** | Coastline proximity lookup for the tsunami heuristic |
 | **Google Maps** | One-click turn-by-turn directions |
 | **Gemini API** *(optional)* | Natural-language summary of the generated action plan |
 
-All core data sources are **free and open** — no paid API keys required except the optional Gemini integration.
+All core data sources are free to use — Geoapify's free tier covers 3,000 requests/day, and no paid API keys are required except the optional Gemini integration.
 
 ---
 
@@ -118,19 +119,19 @@ The project follows a clean, modular separation of concerns — easy to read, te
 ```
 disaster-advisor/
 ├── app.py            # Streamlit UI — layout, tabs, rendering only
-├── api_clients.py     # All external API calls (USGS, Open-Meteo, Overpass, Nominatim)
+├── api_clients.py     # All external API calls (USGS, Open-Meteo, Geoapify, Overpass)
 ├── risk_engine.py      # Pure severity heuristics + action plan generation
 ├── geo_utils.py         # Haversine distance, directions URL builder
 ├── ai_summary.py         # Isolated, fail-safe Gemini integration
 ├── config.py               # All thresholds & constants in one place
 ├── requirements.txt
-└── .env                      # GEMINI_API_KEY (optional)
+└── .env                      # GEOAPIFY_API_KEY, GEMINI_API_KEY (optional)
 ```
 
 **Design principles:**
 - 🧩 **Separation of concerns** — UI, data-fetching, and decision logic never mix
 - 🛡️ **Fail-safe by design** — a failed API call never crashes the app; it degrades gracefully
-- 🔁 **Resilient networking** — Overpass queries automatically fall back across multiple public mirrors
+- 🔁 **Resilient networking** — the coastline lookup automatically falls back across multiple public Overpass mirrors
 - ⚡ **Cached** — repeated queries for the same location are near-instant (`st.cache_data`, 10-min TTL)
 - 🧪 **Testable** — `risk_engine.py` and `geo_utils.py` are pure functions with zero side effects
 
@@ -140,6 +141,7 @@ disaster-advisor/
 
 ### Prerequisites
 - Python 3.9+
+- A free [Geoapify API key](https://myprojects.geoapify.com/) (geocoding + hospital/shelter search)
 - (Optional) A [Gemini API key](https://ai.google.dev/) for AI-generated summaries
 
 ### Setup
@@ -156,8 +158,9 @@ source venv/bin/activate      # Windows: venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. (Optional) Add your Gemini API key
-echo "GEMINI_API_KEY=your_key_here" > .env
+# 4. Add your API keys
+echo "GEOAPIFY_API_KEY=your_key_here" > .env
+echo "GEMINI_API_KEY=your_key_here" >> .env   # optional
 
 # 5. Run the app
 streamlit run app.py
@@ -190,7 +193,7 @@ To deploy your own copy:
 1. Push this repo to your GitHub account
 2. Go to [share.streamlit.io](https://share.streamlit.io)
 3. Select your repo, set `app.py` as the entry point
-4. Add `GEMINI_API_KEY` under **App → Settings → Secrets** (optional)
+4. Add `GEOAPIFY_API_KEY` and (optionally) `GEMINI_API_KEY` under **App → Settings → Secrets**
 
 ---
 
@@ -226,7 +229,7 @@ This project is licensed under the MIT License.
 ## ❤️ Credits
 
 Built with data and tools from:
-**USGS** · **Open-Meteo** · **OpenStreetMap** (Nominatim & Overpass) · **Folium** · **Streamlit** · **Google Gemini**
+**USGS** · **Open-Meteo** · **Geoapify** · **OpenStreetMap** (Overpass) · **Folium** · **Streamlit** · **Google Gemini**
 
 ---
 
