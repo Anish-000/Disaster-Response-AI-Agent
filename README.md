@@ -124,6 +124,8 @@ disaster-advisor/
 ├── geo_utils.py         # Haversine distance, directions URL builder
 ├── ai_summary.py         # Isolated, fail-safe Gemini integration
 ├── config.py               # All thresholds & constants in one place
+├── test_risk_engine.py     # Unit tests for severity rules & action plans
+├── test_geo_utils.py       # Unit tests for distance & directions helpers
 ├── requirements.txt
 └── .env                      # GEOAPIFY_API_KEY, GEMINI_API_KEY (optional)
 ```
@@ -133,7 +135,7 @@ disaster-advisor/
 - 🛡️ **Fail-safe by design** — a failed API call never crashes the app; it degrades gracefully
 - 🔁 **Resilient networking** — the coastline lookup automatically falls back across multiple public Overpass mirrors
 - ⚡ **Cached** — repeated queries for the same location are near-instant (`st.cache_data`, 10-min TTL)
-- 🧪 **Testable** — `risk_engine.py` and `geo_utils.py` are pure functions with zero side effects
+- 🧪 **Tested** — `risk_engine.py` and `geo_utils.py` are pure functions with zero side effects, covered by 66 `pytest` unit tests
 
 ---
 
@@ -164,6 +166,9 @@ echo "GEMINI_API_KEY=your_key_here" >> .env   # optional
 
 # 5. Run the app
 streamlit run app.py
+
+# 6. (Optional) Run the unit tests
+python -m pytest -v
 ```
 
 The app will open automatically at `http://localhost:8501`.
@@ -203,7 +208,7 @@ To deploy your own copy:
 - [ ] Historical risk trend view (time-series, not just current snapshot)
 - [ ] Push/email alerts for saved locations
 - [ ] Offline/low-connectivity fallback mode
-- [ ] Unit test suite for `risk_engine.py` and `geo_utils.py`
+- [x] Unit test suite for `risk_engine.py` and `geo_utils.py`
 - [ ] Mobile-responsive layout improvements
 
 ---
