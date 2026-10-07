@@ -7,9 +7,12 @@ together and renders the result.
 """
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from html import escape
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 import folium
 from folium.plugins import MarkerCluster
 import streamlit.components.v1 as components
@@ -21,6 +24,8 @@ import risk_engine as risk
 from geo_utils import make_directions_url
 from ai_summary import summarize_action_plan
 from config import CACHE_TTL_SECONDS, TSUNAMI_COASTLINE_SEARCH_RADIUS_KM
+
+COASTLINE_TIMEOUT_SECONDS = 25  # hard limit for the Overpass coastline lookup
 
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -123,6 +128,50 @@ def cached_coastline_distance(lat, lon):
 # Orchestration: fetch everything, run it through risk_engine, assemble result
 # ----------------------------------------------------------------------------
 
+def _fetch_all_parallel(lat: float, lon: float, radius_km: int) -> dict:
+    """
+    Fetch every independent data source at the same time instead of one after
+    another. Total wait is roughly the slowest single call, not the sum of all.
+
+    Each call keeps its own @st.cache_data wrapper, so repeat lookups stay instant.
+    Any call that raises returns {"error": ...} so one failure never blocks the rest.
+    The coastline lookup (public Overpass mirrors) gets a hard time limit because it
+    is the one source that can hang; on timeout it falls back to "unknown" (None).
+    """
+    ctx = get_script_run_ctx()  # lets worker threads use Streamlit's cache without warnings
+
+    def run(fn, *args):
+        if ctx is not None:
+            add_script_run_ctx(threading.current_thread(), ctx)
+        try:
+            return fn(*args)
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    tasks = {
+        "earthquake": (cached_earthquake, lat, lon),
+        "weather": (cached_weather, lat, lon),
+        "snowfall": (cached_snowfall, lat, lon),
+        "hurricane": (cached_hurricane, lat, lon),
+        "wildfire": (cached_wildfire_weather, lat, lon),
+        "flood": (cached_flood_precip, lat, lon),
+        "hospitals": (cached_hospitals, lat, lon, radius_km),
+        "shelters": (cached_shelters, lat, lon, radius_km),
+        "coast": (cached_coastline_distance, lat, lon),
+    }
+    pool = ThreadPoolExecutor(max_workers=len(tasks))
+    futures = {name: pool.submit(run, *spec) for name, spec in tasks.items()}
+
+    results = {}
+    for name, fut in futures.items():
+        try:
+            results[name] = fut.result(timeout=COASTLINE_TIMEOUT_SECONDS if name == "coast" else None)
+        except FuturesTimeout:
+            results[name] = None
+    pool.shutdown(wait=False)  # don't block the page on a hung background lookup
+    return results
+
+
 def assess_location(place_or_latlon: str, radius_km: int) -> dict:
     if "," in place_or_latlon:
         try:
@@ -139,19 +188,22 @@ def assess_location(place_or_latlon: str, radius_km: int) -> dict:
             return {"error": f"Geocoding failed: {g['error']}"}
         lat, lon = g["lat"], g["lon"]
 
-    earthquake = cached_earthquake(lat, lon)
-    weather = cached_weather(lat, lon)
-    snowfall = cached_snowfall(lat, lon)
-    hurricane = cached_hurricane(lat, lon)
-    wildfire_weather = cached_wildfire_weather(lat, lon)
-    flood_precip = cached_flood_precip(lat, lon)
-    hospitals_result = cached_hospitals(lat, lon, radius_km)
-    shelters_result = cached_shelters(lat, lon, radius_km)
+    data = _fetch_all_parallel(lat, lon, radius_km)
+    earthquake = data["earthquake"]
+    weather = data["weather"]
+    snowfall = data["snowfall"]
+    hurricane = data["hurricane"]
+    wildfire_weather = data["wildfire"]
+    flood_precip = data["flood"]
+    hospitals_result = data["hospitals"]
+    shelters_result = data["shelters"]
     hospitals = hospitals_result.get("hospitals", [])
     shelters = shelters_result.get("shelters", [])
     hospitals_error = hospitals_result.get("error")
     shelters_error = shelters_result.get("error")
-    coast_dist = cached_coastline_distance(lat, lon)
+    coast_dist = data["coast"]
+    if not isinstance(coast_dist, (int, float)):  # None, timeout, or an error dict
+        coast_dist = None
 
     max_mag = earthquake.get("magnitude_estimate") if "error" not in earthquake else None
     severities = {
